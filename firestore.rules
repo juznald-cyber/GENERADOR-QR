@@ -1,0 +1,208 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// This security rules file assumes the following data structures:
+//
+// Collection: qr_codes
+// Document ID: {shortId} (3..40 chars, matches ^[a-z0-9_-]{3,40}$)
+// Fields (all 12 required; no extraneous fields allowed):
+//   - shortId: string (required, 3..40 chars, matches doc ID & ^[a-z0-9_-]{3,40}$, immutable)
+//   - title: string (required, 1..120 chars) - human-readable QR label
+//   - targetUrl: string (required, 1..2048 chars, matches ^https?://.+) - redirect destination
+//   - category: string (required, enum: 'youtube' | 'tiktok' | 'instagram' | 'facebook' | 'cloud' | 'web' | 'other')
+//   - active: bool (required) - whether public redirect & scan counting are enabled
+//   - scans: int (required, >= 0; must be 0 on create; +1 only on public scan update)
+//   - lastScannedAt: timestamp | null (required, null on create; request.time on public scan update)
+//   - createdAt: timestamp (required, request.time on create, immutable)
+//   - updatedAt: timestamp (required, request.time on create and authenticated update)
+//   - ownerUid: string (required, 1..128 chars, == request.auth.uid on create, immutable)
+//   - ownerEmail: string (required, 0..254 chars, matches auth token email if present on create, immutable)
+//   - style: map (required, <= 20 keys; optional logoDataUrl string <= 150000 chars or null)
+//
+// Access Model:
+//   - Registration is disabled; only admin-provisioned Firebase Auth users exist.
+//   - Authenticated users share a team dashboard with full CRUD + list on /qr_codes.
+//   - Public (unauthenticated) clients may single-document `get` /qr_codes/{shortId}
+//     for redirect resolution (public `list` is strictly denied) and may perform
+//     strictly scoped +1 scan-counter updates when `resource.data.active == true`.
+//   - All other collections and paths are denied by default.
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if user owns the resource by UID
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Verify ownerUid matches authenticated user on create
+    function uidUnchanged() {
+      return request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Ensure ownerUid is not modified on update
+    function uidNotModified() {
+      return request.resource.data.ownerUid == resource.data.ownerUid;
+    }
+
+    // Validate required fields exist
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that the document contains only allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate that immutable fields have not changed on update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate string length bounds
+    function validStringLength(value, minLen, maxLen) {
+      return value is string && value.size() >= minLen && value.size() <= maxLen;
+    }
+
+    // Validate HTTP/HTTPS URL format and length
+    function isValidTargetUrl(url) {
+      return validStringLength(url, 1, 2048) && url.matches('^https?://.+');
+    }
+
+    // Validate shortId format and document ID alignment
+    function isValidShortId(value, docId) {
+      return validStringLength(value, 3, 40) &&
+        value == docId &&
+        value.matches('^[a-z0-9_-]{3,40}$');
+    }
+
+    // Validate QR category enum
+    function isValidCategory(category) {
+      return category in [
+        'youtube',
+        'tiktok',
+        'instagram',
+        'facebook',
+        'cloud',
+        'web',
+        'other'
+      ];
+    }
+
+    // Validate QR visual styling map with size and logoDataUrl bounds
+    function isValidStyle(style) {
+      return style is map &&
+        style.size() <= 20 &&
+        (!('logoDataUrl' in style) ||
+          style.logoDataUrl == null ||
+          (style.logoDataUrl is string && style.logoDataUrl.size() <= 150000));
+    }
+
+    // ===============================================================
+    // Domain Validators (Used in BOTH create and update)
+    // ===============================================================
+
+    function isValidQrCode(data, shortId) {
+      let allowedFields = [
+        'shortId',
+        'title',
+        'targetUrl',
+        'category',
+        'active',
+        'scans',
+        'lastScannedAt',
+        'createdAt',
+        'updatedAt',
+        'ownerUid',
+        'ownerEmail',
+        'style'
+      ];
+
+      return hasOnlyAllowedFields(allowedFields) &&
+        hasRequiredFields(allowedFields) &&
+        isValidShortId(data.shortId, shortId) &&
+        validStringLength(data.title, 1, 120) &&
+        isValidTargetUrl(data.targetUrl) &&
+        isValidCategory(data.category) &&
+        data.active is bool &&
+        data.scans is int && data.scans >= 0 &&
+        (data.lastScannedAt == null || data.lastScannedAt is timestamp) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        validStringLength(data.ownerUid, 1, 128) &&
+        validStringLength(data.ownerEmail, 0, 254) &&
+        isValidStyle(data.style);
+    }
+
+    // Validate public atomic +1 scan counter update on active QR codes
+    function isValidPublicScanUpdate() {
+      return resource.data.active == true &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['scans', 'lastScannedAt']) &&
+        request.resource.data.scans is int &&
+        request.resource.data.scans == resource.data.scans + 1 &&
+        request.resource.data.lastScannedAt == request.time;
+    }
+
+    // Validate authenticated team dashboard update
+    function isValidAuthenticatedQrUpdate() {
+      return isAuthenticated() &&
+        uidNotModified() &&
+        areImmutableFieldsUnchanged(['shortId', 'createdAt', 'ownerUid', 'ownerEmail']) &&
+        request.resource.data.updatedAt == request.time;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /qr_codes/{shortId} {
+      // Public single-document get for QR redirect resolution (NEVER allow public list)
+      allow get: if true;
+
+      // Only authenticated team members can list/query the QR dashboard
+      allow list: if isAuthenticated();
+
+      // Authenticated team members can create QR codes with strict initial state
+      allow create: if isAuthenticated() &&
+        isValidQrCode(request.resource.data, shortId) &&
+        uidUnchanged() &&
+        (!('email' in request.auth.token) ||
+          request.resource.data.ownerEmail == request.auth.token.email) &&
+        request.resource.data.scans == 0 &&
+        request.resource.data.lastScannedAt == null &&
+        request.resource.data.createdAt == request.time &&
+        request.resource.data.updatedAt == request.time;
+
+      // Update: either a strictly scoped public +1 scan increment on an active QR,
+      // or a validated authenticated team update preserving immutable fields
+      allow update: if isValidQrCode(request.resource.data, shortId) &&
+        (isValidPublicScanUpdate() || isValidAuthenticatedQrUpdate());
+
+      // Authenticated team members can delete QR codes
+      allow delete: if isAuthenticated();
+    }
+
+    // ===============================================================
+    // Default Deny All Other Paths
+    // ===============================================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
