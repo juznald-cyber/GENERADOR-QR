@@ -50,12 +50,15 @@ export const RedirectView: React.FC<RedirectViewProps> = ({ shortId }) => {
         setTitle(data.title || 'Redirigiendo...');
         setStatus('redirecting');
 
-        // Increment scan count atomically (best-effort, never blocks redirect)
+        // Increment scan count atomically (bounded to 700ms so redirect is always fast)
         try {
-          await updateDoc(ref, {
-            scans: increment(1),
-            lastScannedAt: serverTimestamp(),
-          });
+          await Promise.race([
+            updateDoc(ref, {
+              scans: increment(1),
+              lastScannedAt: serverTimestamp(),
+            }),
+            new Promise((resolve) => setTimeout(resolve, 700)),
+          ]);
         } catch {
           // Ignore counter error so redirect always succeeds
         }
