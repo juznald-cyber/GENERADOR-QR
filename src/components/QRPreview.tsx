@@ -20,17 +20,19 @@ export const QRPreview: React.FC<QRPreviewProps> = ({
   const qrRef = useRef<QRCodeStyling | null>(null);
 
   useEffect(() => {
-    const options = buildQrStylingOptions(data || 'https://generador-qr-96098.web.app', style, size);
+    const container = containerRef.current;
+    if (!container) return;
 
-    if (!qrRef.current) {
-      qrRef.current = new QRCodeStyling(options as never);
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '';
-        qrRef.current.append(containerRef.current);
-      }
-    } else {
-      qrRef.current.update(options as never);
-    }
+    const options = buildQrStylingOptions(
+      data || 'https://generador-qr-96098.web.app',
+      style,
+      size
+    );
+
+    const instance = new QRCodeStyling(options as never);
+    qrRef.current = instance;
+    container.innerHTML = '';
+    instance.append(container);
   }, [data, style, size]);
 
   return (

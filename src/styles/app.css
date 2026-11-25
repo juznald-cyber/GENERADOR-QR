@@ -327,14 +327,14 @@ select {
   align-items: center;
 }
 
-.input-icon-wrap input {
-  padding-left: 42px;
-  padding-right: 42px;
+.field-group .input-icon-wrap input {
+  padding-left: 46px;
+  padding-right: 46px;
 }
 
 .input-icon {
   position: absolute;
-  left: 13px;
+  left: 15px;
   color: var(--text-muted);
   pointer-events: none;
 }

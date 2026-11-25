@@ -286,6 +286,7 @@ export function buildQrStylingOptions(
   };
 
   if (style.useGradient) {
+    dotsOptions.color = undefined;
     dotsOptions.gradient = {
       type: style.gradientType,
       rotation: Math.PI / 4,
@@ -295,6 +296,7 @@ export function buildQrStylingOptions(
       ],
     };
   } else {
+    dotsOptions.gradient = undefined;
     dotsOptions.color = style.fgColor;
   }
 
